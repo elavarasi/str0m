@@ -1,8 +1,46 @@
 //! Bandwidth estimation.
 
+use std::time::{Duration, Instant};
+
 use crate::{Rtc, rtp_::Mid};
 
 pub use crate::rtp_::Bitrate;
+
+/// Per-packet timing record derived from a TWCC feedback report.
+///
+/// Emitted by [`Event::TwccFeedback`][crate::Event::TwccFeedback] each time a
+/// TWCC RTCP report is processed.  Callers can use these records to drive an
+/// external bandwidth estimator such as R3Net.
+///
+/// Timestamps are wall-clock `Instant`s from the **sender** side; convert to
+/// milliseconds via `instant.duration_since(epoch).as_secs_f64() * 1000.0`.
+#[derive(Debug, Clone)]
+pub struct TwccPacketReport {
+    /// TWCC sequence number, uniquely identifies the packet across the session.
+    pub seq: u64,
+
+    /// When the sender dispatched this packet.
+    pub send_time: Instant,
+
+    /// When the **sender** received the TWCC acknowledgement for this packet.
+    ///
+    /// `None` means the packet was reported as lost in the TWCC feedback.
+    pub local_recv_time: Option<Instant>,
+
+    /// Receiver-side arrival time reported in the TWCC feedback (`None` when
+    /// the feedback format omits the receive delta, or the packet was lost).
+    pub remote_recv_time: Option<Instant>,
+
+    /// RTP payload size in bytes (excluding headers).
+    pub size_bytes: usize,
+
+    /// `true` when this was a bandwidth-probe packet (has a probe cluster).
+    pub is_probe: bool,
+
+    /// Round-trip time approximation: `local_recv_time - send_time`.
+    /// `None` if the packet was lost.
+    pub rtt: Option<Duration>,
+}
 
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]

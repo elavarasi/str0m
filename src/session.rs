@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::Event;
-use crate::bwe::BweKind;
+use crate::bwe::{BweKind, TwccPacketReport};
 use crate::bwe_::Bwe;
 use crate::config::KeyingMaterial;
 use crate::crypto::CryptoProvider;
@@ -109,6 +109,9 @@ pub(crate) struct Session {
 
     raw_packets: Option<VecDeque<Box<RawPacket>>>,
 
+    /// Buffered per-packet TWCC reports waiting to be returned by `poll_event`.
+    pending_twcc_feedback: VecDeque<Vec<TwccPacketReport>>,
+
     #[cfg(feature = "_internal_test_exports")]
     pending_probe: Option<crate::bwe_::ProbeClusterConfig>,
 }
@@ -173,6 +176,7 @@ impl Session {
             } else {
                 None
             },
+            pending_twcc_feedback: VecDeque::new(),
             #[cfg(feature = "_internal_test_exports")]
             pending_probe: None,
         }
@@ -592,8 +596,37 @@ impl Session {
                 trace!("Handle TWCC: {:?}", twcc);
                 let maybe_records = self.twcc_tx_register.apply_report(twcc, now);
 
-                if let (Some(maybe_records), Some(bwe)) = (maybe_records, &mut self.bwe) {
-                    bwe.update(maybe_records, now);
+                if let Some(records) = maybe_records {
+                    // Collect per-packet timing data for external consumers (e.g. R3Net)
+                    // while simultaneously feeding the same records to the built-in BWE.
+                    // `inspect` acts as a pass-through: it preserves `Item = &TwccSendRecord`
+                    // so BWE gets exactly what it expects, and the closure fills `reports_vec`
+                    // as a side-effect as the iterator is consumed.
+                    let mut reports_vec: Vec<TwccPacketReport> = Vec::new();
+                    let instrumented = records.inspect(|r| {
+                        reports_vec.push(TwccPacketReport {
+                            seq: *r.seq(),
+                            send_time: r.local_send_time(),
+                            local_recv_time: r.local_recv_time(),
+                            remote_recv_time: r.remote_recv_time(),
+                            size_bytes: r.size(),
+                            is_probe: r.cluster().is_some(),
+                            rtt: r.rtt(),
+                        });
+                    });
+
+                    if let Some(bwe) = &mut self.bwe {
+                        // Drives the iterator; inspect closure populates reports_vec.
+                        bwe.update(instrumented, now);
+                    } else {
+                        // No BWE configured — still consume the iterator so reports_vec
+                        // is populated (allows external consumers to work standalone).
+                        instrumented.for_each(|_| {});
+                    }
+
+                    if !reports_vec.is_empty() {
+                        self.pending_twcc_feedback.push_back(reports_vec);
+                    }
                 }
                 need_configure_pacer = true;
 
@@ -631,6 +664,11 @@ impl Session {
             if let Some(probe) = self.pending_probe.take() {
                 return Some(Event::Probe(probe));
             }
+        }
+
+        // Emit buffered per-packet TWCC reports before the aggregate estimate.
+        if let Some(reports) = self.pending_twcc_feedback.pop_front() {
+            return Some(Event::TwccFeedback(reports));
         }
 
         if let Some(bitrate_estimate) = self.bwe.as_mut().and_then(|bwe| bwe.poll_estimate()) {

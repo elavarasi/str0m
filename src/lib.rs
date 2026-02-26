@@ -925,6 +925,17 @@ pub enum Event {
     /// A new estimate from the bandwidth estimation subsystem.
     EgressBitrateEstimate(BweKind),
 
+    /// Per-packet TWCC timing records from the latest TWCC feedback report.
+    ///
+    /// Fired once per TWCC RTCP report received, **before** the corresponding
+    /// [`EgressBitrateEstimate`][Event::EgressBitrateEstimate] event (if any).
+    /// Each element describes one packet covered by that report, including
+    /// lost packets (identified by `local_recv_time == None`).
+    ///
+    /// Use these records to drive an external bandwidth estimator.  The vector
+    /// is ordered by TWCC sequence number (ascending).
+    TwccFeedback(Vec<bwe::TwccPacketReport>),
+
     // =================== RTP related events ===================
 
     /// Incoming keyframe request for media that we are sending to the remote peer.
@@ -1438,7 +1449,8 @@ impl Rtc {
                 | Event::PeerStats(_)
                 | Event::ChannelBufferedAmountLow(_)
                 | Event::EgressBitrateEstimate(_)
-                | Event::KeyframeRequest(_) => {
+                | Event::KeyframeRequest(_)
+                | Event::TwccFeedback(_) => {
                     trace!("{:?}", e)
                 }
                 _ => debug!("{:?}", e),
