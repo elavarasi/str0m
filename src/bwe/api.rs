@@ -15,6 +15,7 @@ pub use crate::rtp_::Bitrate;
 /// Timestamps are wall-clock `Instant`s from the **sender** side; convert to
 /// milliseconds via `instant.duration_since(epoch).as_secs_f64() * 1000.0`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TwccPacketReport {
     /// TWCC sequence number, uniquely identifies the packet across the session.
     pub seq: u64,
@@ -37,8 +38,9 @@ pub struct TwccPacketReport {
     /// `true` when this was a bandwidth-probe packet (has a probe cluster).
     pub is_probe: bool,
 
-    /// `true` when this packet carried audio media (as opposed to video or data).
-    /// `false` for probe/padding packets.
+    /// `true` when this packet was sent on an audio media line (as opposed to a video
+    /// or data line).  This is `true` even for padding packets sent on an audio mid,
+    /// and `false` for all video-mid packets including probe/padding packets on that mid.
     pub is_audio: bool,
 
     /// Round-trip time approximation: `local_recv_time - send_time`.
