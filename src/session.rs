@@ -611,6 +611,7 @@ impl Session {
                             remote_recv_time: r.remote_recv_time(),
                             size_bytes: r.size(),
                             is_probe: r.cluster().is_some(),
+                            is_audio: r.is_audio(),
                             rtt: r.rtt(),
                         });
                     });
@@ -885,7 +886,7 @@ impl Session {
                 TwccPacketId::new(twcc_seq)
             };
             self.twcc_tx_register
-                .register_seq(packet_id, now, payload_size);
+                .register_seq(packet_id, now, payload_size, media.kind().is_audio());
         }
 
         // Update BWE subsystem

@@ -37,6 +37,10 @@ pub struct TwccPacketReport {
     /// `true` when this was a bandwidth-probe packet (has a probe cluster).
     pub is_probe: bool,
 
+    /// `true` when this packet carried audio media (as opposed to video or data).
+    /// `false` for probe/padding packets.
+    pub is_audio: bool,
+
     /// Round-trip time approximation: `local_recv_time - send_time`.
     /// `None` if the packet was lost.
     pub rtt: Option<Duration>,

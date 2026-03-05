@@ -1076,6 +1076,9 @@ pub struct TwccSendRecord {
     /// Size in bytes of the payload sent.
     size: u16,
 
+    /// Whether this packet carries audio (true) or video (false).
+    is_audio: bool,
+
     recv_report: Option<TwccRecvReport>,
 }
 
@@ -1102,6 +1105,11 @@ impl TwccSendRecord {
 
     pub fn size(&self) -> usize {
         self.size as usize
+    }
+
+    /// Whether this packet carries audio (true) or video (false).
+    pub fn is_audio(&self) -> bool {
+        self.is_audio
     }
 
     /// The time indicated by the remote side for when they received the packet.
@@ -1133,6 +1141,7 @@ impl TwccSendRecord {
             packet_id,
             local_send_time,
             size: size as u16,
+            is_audio: false,
             recv_report: Some(TwccRecvReport {
                 local_recv_time,
                 remote_recv_time,
@@ -1165,7 +1174,7 @@ impl TwccSendRegister {
         }
     }
 
-    pub fn register_seq(&mut self, packet_id: TwccPacketId, now: Instant, size: usize) {
+    pub fn register_seq(&mut self, packet_id: TwccPacketId, now: Instant, size: usize, is_audio: bool) {
         self.last_registered = packet_id.seq();
         self.queue.push_back(TwccSendRecord {
             packet_id,
@@ -1173,6 +1182,7 @@ impl TwccSendRegister {
             // In practice the max sizes is constrained by the MTU and will max out around 1200
             // bytes, hence this cast is fine.
             size: size as u16,
+            is_audio,
             // The recv report, derived from TWCC feedback later.
             recv_report: None,
         });
@@ -1898,7 +1908,7 @@ mod test {
         let mut now = Instant::now();
 
         for i in 0..50 {
-            reg.register_seq(TwccPacketId::new(i), now, 0);
+            reg.register_seq(TwccPacketId::new(i), now, 0, false);
             now = now + Duration::from_micros(15);
         }
 
@@ -2069,7 +2079,7 @@ mod test {
         let mut reg = TwccSendRegister::new(25);
         let mut now = Instant::now();
         for i in 0..25 {
-            reg.register_seq(TwccPacketId::new(i), now, 0);
+            reg.register_seq(TwccPacketId::new(i), now, 0, false);
             now = now + Duration::from_micros(15);
         }
 
@@ -2110,7 +2120,7 @@ mod test {
         let mut reg = TwccSendRegister::new(25);
         let mut now = Instant::now();
         for i in 0..9 {
-            reg.register_seq(TwccPacketId::new(i), now, 0);
+            reg.register_seq(TwccPacketId::new(i), now, 0, false);
             now = now + Duration::from_millis(15);
         }
 
@@ -2191,10 +2201,10 @@ mod test {
         let mut twcc_gen = TwccRecvRegister::new(1000);
         let mut twcc_handler = TwccSendRegister::new(1000);
 
-        twcc_handler.register_seq(TwccPacketId::new(1), now + Duration::from_millis(1), 0);
-        twcc_handler.register_seq(TwccPacketId::new(2), now + Duration::from_millis(2), 0);
-        twcc_handler.register_seq(TwccPacketId::new(3), now + Duration::from_millis(3), 0);
-        twcc_handler.register_seq(TwccPacketId::new(4), now + Duration::from_millis(4), 0);
+        twcc_handler.register_seq(TwccPacketId::new(1), now + Duration::from_millis(1), 0, false);
+        twcc_handler.register_seq(TwccPacketId::new(2), now + Duration::from_millis(2), 0, false);
+        twcc_handler.register_seq(TwccPacketId::new(3), now + Duration::from_millis(3), 0, false);
+        twcc_handler.register_seq(TwccPacketId::new(4), now + Duration::from_millis(4), 0, false);
 
         {
             let acked_packets = twcc_handler
@@ -2215,9 +2225,9 @@ mod test {
             assert_eq!(acked_packets, [1, 2, 4]);
         }
 
-        twcc_handler.register_seq(TwccPacketId::new(5), now + Duration::from_millis(9), 0);
-        twcc_handler.register_seq(TwccPacketId::new(6), now + Duration::from_millis(10), 0);
-        twcc_handler.register_seq(TwccPacketId::new(7), now + Duration::from_millis(11), 0);
+        twcc_handler.register_seq(TwccPacketId::new(5), now + Duration::from_millis(9), 0, false);
+        twcc_handler.register_seq(TwccPacketId::new(6), now + Duration::from_millis(10), 0, false);
+        twcc_handler.register_seq(TwccPacketId::new(7), now + Duration::from_millis(11), 0, false);
 
         {
             let acked_packets = twcc_handler
