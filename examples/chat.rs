@@ -380,9 +380,9 @@ impl Client {
     fn handle_output(&mut self, output: Output, socket: &UdpSocket) -> Propagated {
         match output {
             Output::Transmit(transmit) => {
-                socket
-                    .send_to(&transmit.contents, transmit.destination)
-                    .expect("sending UDP data");
+                if let Err(e) = socket.send_to(&transmit.contents, transmit.destination) {
+                    warn!("UDP send to {} failed: {:?}", transmit.destination, e);
+                }
                 Propagated::Noop
             }
             Output::Timeout(t) => Propagated::Timeout(t),
