@@ -7,6 +7,11 @@
         body {
             background: black;
             color: white;
+            font-family: monospace;
+        }
+        #bwe_display {
+            margin: 8px 0;
+            font-size: 14px;
         }
     </style>
 </head>
@@ -17,11 +22,13 @@
     <button id="mic" onClick="startMic()" disabled>Mic</button>
     ICE: <span id="ice_status">new</span>
     <div id="chan_status">Waiting for data channel.</div>
+    <div id="bwe_display">BWE: —</div>
     <div id="media"></div>
     <script>
         let streamCam;
         let streamMic;
         let dataChannel;
+        let videoSender = null;
         let rtc = new RTCPeerConnection();
         rtc.oniceconnectionstatechange = () => {
             byId('ice_status').innerText = rtc.iceConnectionState;
@@ -62,41 +69,77 @@
             rtc.setLocalDescription(answer);
             await dataChannel.send(JSON.stringify(answer));
         }
+
+        // Resolution ladder matching Chromium's simulcast table thresholds.
+        // kbps >= 600  → 720p
+        // kbps >= 150  → 360p
+        // kbps <  150  → 180p
+        async function applyBweKbps(rawKbps) {
+            const kbps = Math.max(30, Math.min(2500, rawKbps));
+            let targetWidth, targetHeight;
+            if (kbps >= 600) {
+                targetWidth = 1280; targetHeight = 720;
+            } else if (kbps >= 150) {
+                targetWidth = 640; targetHeight = 360;
+            } else {
+                targetWidth = 320; targetHeight = 180;
+            }
+
+            byId('bwe_display').innerText =
+                `BWE: ${kbps} kbps → ${targetWidth}×${targetHeight}`;
+
+            if (streamCam) {
+                const videoTrack = streamCam.getVideoTracks()[0];
+                if (videoTrack) {
+                    try {
+                        await videoTrack.applyConstraints({
+                            width: { ideal: targetWidth },
+                            height: { ideal: targetHeight }
+                        });
+                    } catch (e) {
+                        console.warn('applyConstraints failed:', e);
+                    }
+                }
+            }
+
+            if (videoSender) {
+                try {
+                    const params = videoSender.getParameters();
+                    if (params.encodings && params.encodings.length > 0) {
+                        params.encodings[0].maxBitrate = kbps * 1000;
+                        await videoSender.setParameters(params);
+                    }
+                } catch (e) {
+                    console.warn('setParameters failed:', e);
+                }
+            }
+
+            console.log(`BWE applied: ${kbps} kbps → ${targetWidth}×${targetHeight}`);
+        }
+
         async function startCam() {
             byId('cam').disabled = true;
+            // Capture at 720p@30fps to match Kaustav's test setup
             streamCam = await navigator.mediaDevices.getUserMedia({
                 video: {
-                    width: 640,
-                    height: 360,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    frameRate: { ideal: 30 },
                 },
             });
             const tr = rtc.addTransceiver(streamCam.getTracks()[0], {
                 direction: "sendonly",
                 streams: [streamCam],
-                // This table shows the valid values for simulcast.
-                //
-                // https://chromium.googlesource.com/external/webrtc/+/branch-heads/49/talk/media/webrtc/simulcast.cc
-                // These tables describe from which resolution we can use how many
-                // simulcast layers at what bitrates (maximum, target, and minimum).
-                // Important!! Keep this table from high resolution to low resolution.
-                // const SimulcastFormat kSimulcastFormats[] = {
-                //   {1920, 1080, 3, 5000, 4000, 800},
-                //   {1280, 720, 3,  2500, 2500, 600},
-                //   {960, 540, 3, 900, 900, 450},
-                //   {640, 360, 2, 700, 500, 150},
-                //   {480, 270, 2, 450, 350, 150},
-                //   {320, 180, 1, 200, 150, 30},
-                //   {0, 0, 1, 200, 150, 30}
-                // };
-
-                // Uncomment this to enable simulcast. The actual selected
-                // simulcast level is hardcoded in chat.rs.
+                // Uncomment to enable simulcast (hardcoded selection in chat.rs):
                 // sendEncodings: [
                 //     { rid: "h", maxBitrate: 700 * 1024 },
                 //     { rid: "l", maxBitrate: 150 * 1024 }
                 // ]
             });
+            videoSender = tr.sender;
             await negotiate();
+            // Set initial encoder target to 2.5 Mbps
+            await applyBweKbps(2500);
         }
         async function startMic() {
             byId('mic').disabled = true;
@@ -143,11 +186,12 @@
             dataChannel.onmessage = (event) => {
                 let json = JSON.parse(event.data);
                 if (json.type == 'offer') {
-                    // no callback probably means it's an offer
                     handleOffer(event.data);
                 } else if (json.type == 'answer') {
                     callback(event.data);
                     callback = null;
+                } else if (json.bwe_kbps !== undefined) {
+                    applyBweKbps(json.bwe_kbps);
                 }
             };
             dataChannel.onopen = () => {

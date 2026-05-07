@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use rouille::Server;
 use rouille::{Request, Response};
+use str0m::bwe::{Bitrate, BweKind};
 use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::channel::{ChannelData, ChannelId};
 use str0m::crypto::from_feature_flags;
@@ -83,10 +84,14 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
 
     let offer: SdpOffer = serde_json::from_reader(&mut data).expect("serialized offer");
     let mut rtc = Rtc::builder()
-        // Uncomment this to see statistics
-        // .set_stats_interval(Some(Duration::from_secs(1)))
-        // .set_ice_lite(true)
+        // Enable BWE with 300 kbps initial estimate (matches WebRTC's starting BWE)
+        .enable_bwe(Some(Bitrate::kbps(300)))
+        .set_stats_interval(Some(Duration::from_secs(1)))
         .build(Instant::now());
+
+    // Tell BWE the target bitrate we want to reach; without this the probe
+    // controller has no upper bound and will not generate probes.
+    rtc.bwe().set_desired_bitrate(Bitrate::mbps(5));
 
     // Add the shared UDP socket as a host candidate
     let candidate = Candidate::host(addr, "udp").expect("a host candidate");
@@ -226,6 +231,7 @@ fn propagate(propagated: &Propagated, clients: &mut [Client]) {
                     client.handle_keyframe_request(*req, *mid_in)
                 }
             }
+            Propagated::BweEstimate(_, kbps) => client.handle_bwe_estimate(*kbps),
             Propagated::Noop | Propagated::Timeout(_) => {}
         }
     }
@@ -397,8 +403,15 @@ impl Client {
                     Propagated::Noop
                 }
                 Event::ChannelData(data) => self.handle_channel_data(data),
-
-                // NB: To see statistics, uncomment set_stats_interval() above.
+                Event::EgressBitrateEstimate(bwe) => {
+                    if let BweKind::Twcc(bitrate) = bwe {
+                        let kbps = bitrate.as_u64() / 1000;
+                        info!("BWE estimate: {} kbps (client {})", kbps, *self.id);
+                        Propagated::BweEstimate(self.id, kbps)
+                    } else {
+                        Propagated::Noop
+                    }
+                }
                 Event::MediaIngressStats(data) => {
                     info!("{:?}", data);
                     Propagated::Noop
@@ -633,6 +646,14 @@ impl Client {
         }
     }
 
+    fn handle_bwe_estimate(&mut self, kbps: u64) {
+        let Some(mut channel) = self.cid.and_then(|id| self.rtc.channel(id)) else {
+            return;
+        };
+        let msg = format!("{{\"bwe_kbps\":{kbps}}}");
+        channel.write(false, msg.as_bytes()).ok();
+    }
+
     fn handle_keyframe_request(&mut self, req: KeyframeRequest, mid_in: Mid) {
         let has_incoming_track = self.tracks_in.iter().any(|i| i.id.mid == mid_in);
 
@@ -670,6 +691,9 @@ enum Propagated {
 
     /// A keyframe request from one client to the source.
     KeyframeRequest(ClientId, KeyframeRequest, ClientId, Mid),
+
+    /// A BWE estimate (kbps) to forward to other clients via data channel.
+    BweEstimate(ClientId, u64),
 }
 
 impl Propagated {
@@ -678,7 +702,8 @@ impl Propagated {
         match self {
             Propagated::TrackOpen(c, _)
             | Propagated::MediaData(c, _)
-            | Propagated::KeyframeRequest(c, _, _, _) => Some(*c),
+            | Propagated::KeyframeRequest(c, _, _, _)
+            | Propagated::BweEstimate(c, _) => Some(*c),
             _ => None,
         }
     }
